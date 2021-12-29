@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -17,6 +18,14 @@ type Server struct {
 	addr    string
 	handler func(conn net.Conn)
 }
+
+type Header struct {
+	method  string
+	path    string
+	version string
+}
+
+const ROOT_DIR = "."
 
 func (s *Server) ListenAndGo() error {
 	ln, err := net.Listen(s.proto, s.addr)
@@ -57,44 +66,87 @@ func GoRuntimeStats() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	request(conn)
-	response(conn)
+	header, tf := request(conn)
+	if tf {
+		contents, err := openfile(header.path)
+		response(conn, contents, err)
+	} else {
+		errorResponse(conn, "405 Method Not Allowed")
+	}
+
 }
 
-func request(conn net.Conn) {
+func openfile(path string) ([]string, error) {
+	file, err := os.Open(ROOT_DIR + path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanWords)
+
+	var words []string
+
+	for scanner.Scan() {
+		words = append(words, scanner.Text())
+	}
+
+	return words, nil
+}
+
+func request(conn net.Conn) (Header, bool) {
+	var header Header
 	i := 0
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		line := scanner.Text()
 		fmt.Println("Line", line)
 		if i == 0 {
-			m := strings.Fields(line)[0]
-			fmt.Println("Methods", m)
+			header = Header{strings.Fields(line)[0], strings.Fields(line)[1], strings.Fields(line)[2]}
 		}
 		if line == "" {
 			break
 		}
 		i++
 	}
+	if header.method == "GET" {
+		return header, true
+	} else {
+		return header, false
+	}
+
 }
 
-func response(conn net.Conn) {
-	body := `
-	Hello
-	`
+func response(conn net.Conn, contents []string, err error) {
+	var strBody string
+	if err != nil {
+		fmt.Fprint(conn, "HTTP/1.1 404 not found\r\n")
+		strBody = "404 File Not Found"
+	} else {
+		fmt.Fprint(conn, "HTTP/1.1 200 OK\r\n")
+		strBody = strings.Join(contents, "\n")
+	}
 
-	fmt.Fprint(conn, "HTTP/1.1 200 OK\r\n")
-	fmt.Fprintf(conn, "Content-Length: %d\r\n", len(body))
+	fmt.Fprintf(conn, "Content-Length: %d\r\n", len(strBody))
 	fmt.Fprint(conn, "Content-Type: text/html\r\n")
 	fmt.Fprint(conn, "\r\n")
-	fmt.Fprint(conn, body)
+	fmt.Fprint(conn, strBody)
+}
+
+func errorResponse(conn net.Conn, msg string) {
+	fmt.Fprint(conn, "HTTP/1.1 405 Method Not Allowed\r\n")
+	fmt.Fprintf(conn, "Content-Length: %d\r\n", len(msg))
+	fmt.Fprint(conn, "Content-Type: text/html\r\n")
+	fmt.Fprint(conn, "\r\n")
+	fmt.Fprint(conn, msg)
 }
 
 func main() {
 
 	go GoRuntimeStats()
 
-	s := &Server{proto: "tcp", addr: net.JoinHostPort("127.0.0.1", "8080"), handler: handleConnection}
+	s := &Server{proto: "tcp", addr: net.JoinHostPort("127.0.0.1", "9000"), handler: handleConnection}
 	s.ListenAndGo()
 
 	log.Println("Finished execution!")
